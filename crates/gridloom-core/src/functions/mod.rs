@@ -11,10 +11,23 @@ use crate::value::Value;
 
 pub trait EvaluationContext {
     fn get_cell_value(&self, coord: crate::value::CellCoord) -> Result<Value, CellError>;
+    fn get_spill_values(&self, coord: crate::value::CellCoord) -> Result<Value, CellError> {
+        self.get_cell_value(coord)
+    }
     fn get_range_values(&self, range: crate::value::CellRange) -> Result<Value, CellError>;
     fn get_table_column(&self, sref: &crate::ast::StructuredRef) -> Result<Value, CellError>;
-    fn execute_sql_value(&self, connection_name: &str, sql: &str, params: &[Value]) -> Result<Value, CellError>;
-    fn execute_sql_table(&self, connection_name: &str, sql: &str, params: &[Value]) -> Result<Value, CellError>;
+    fn execute_sql_value(
+        &self,
+        connection_name: &str,
+        sql: &str,
+        params: &[Value],
+    ) -> Result<Value, CellError>;
+    fn execute_sql_table(
+        &self,
+        connection_name: &str,
+        sql: &str,
+        params: &[Value],
+    ) -> Result<Value, CellError>;
 }
 
 pub fn call_function<C: EvaluationContext + ?Sized>(

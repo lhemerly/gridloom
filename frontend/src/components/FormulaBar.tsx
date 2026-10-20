@@ -1,3 +1,4 @@
+import { displayValue } from '../utils/values';
 import React, { useState, useEffect, useRef } from 'react';
 import { Check, X } from 'lucide-react';
 import { CellRenderData } from '../types';
@@ -56,7 +57,7 @@ export const FormulaBar: React.FC<FormulaBarProps> = ({
       if (activeCellData.formula) {
         setInputValue(activeCellData.formula);
       } else if (activeCellData.raw_value !== null && activeCellData.raw_value !== undefined) {
-        setInputValue(String(activeCellData.raw_value));
+        setInputValue(displayValue(activeCellData.raw_value));
       } else {
         setInputValue(activeCellData.display_text || '');
       }
@@ -89,7 +90,7 @@ export const FormulaBar: React.FC<FormulaBarProps> = ({
     } else if (e.key === 'Escape') {
       setShowSuggestions(false);
       if (activeCellData) {
-        setInputValue(activeCellData.formula || String(activeCellData.raw_value ?? ''));
+        setInputValue(activeCellData.formula || displayValue(activeCellData.raw_value));
       }
     }
   };
@@ -138,7 +139,7 @@ export const FormulaBar: React.FC<FormulaBarProps> = ({
         <button
           onClick={() => {
             if (activeCellData) {
-              setInputValue(activeCellData.formula || String(activeCellData.raw_value ?? ''));
+              setInputValue(activeCellData.formula || displayValue(activeCellData.raw_value));
             }
           }}
           className="p-1 hover:text-slate-600 rounded hover:bg-slate-100"

@@ -1,5 +1,7 @@
 import {
   AuditRecord,
+  CellValue,
+  WorkbookSummary,
   BenchmarkSuiteReport,
   ChartData,
   ChartDefinition,
@@ -34,7 +36,7 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  getWorkbook: () => fetchJson<any>('/api/workbook'),
+  getWorkbook: () => fetchJson<WorkbookSummary>('/api/workbook'),
   newWorkbook: () => fetchJson<{ status: string }>('/api/workbook/new', { method: 'POST' }),
   openWorkbook: (path: string) => fetchJson<any>('/api/workbook/open', { method: 'POST', body: JSON.stringify({ path }) }),
   saveWorkbook: (path: string) => fetchJson<any>('/api/workbook/save', { method: 'POST', body: JSON.stringify({ path }) }),
@@ -91,10 +93,10 @@ export const api = {
     connection_name: string;
     table_name: string;
     pk_columns: string[];
-    pk_values: any[];
+    pk_values: CellValue[];
     column_name: string;
-    original_value: any;
-    proposed_value: any;
+    original_value: CellValue;
+    proposed_value: CellValue;
   }) => fetchJson<{ status: string; id: string }>('/api/staged', { method: 'POST', body: JSON.stringify(data) }),
   discardStaged: (id: string) => fetchJson<{ status: string }>(`/api/staged/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   discardAllStaged: () => fetchJson<{ status: string }>('/api/staged', { method: 'DELETE' }),

@@ -30,3 +30,6 @@ path = "src/lib.rs"
 [[bin]]
 name = "gridloom-server"
 path = "src/main.rs"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

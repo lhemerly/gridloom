@@ -60,7 +60,7 @@ export const BenchmarkModal: React.FC<BenchmarkModalProps> = ({ isOpen, onClose 
               <span className="font-bold">Standardized Automated Benchmark Suite:</span>
               <p className="text-[11px] text-emerald-800 mt-0.5">
                 Measures dependency recalculation, 100k-row DuckDB analytical scan, vectorized XLOOKUP,
-                and viewport slicing against strict performance and resource bounds.
+                and viewport slicing. Resource smoke-test budgets: 30 seconds per workload and 1 GiB peak process RSS (Linux).
               </p>
             </div>
             <button
@@ -92,7 +92,7 @@ export const BenchmarkModal: React.FC<BenchmarkModalProps> = ({ isOpen, onClose 
                     <th className="px-3 py-2 text-right">Operations</th>
                     <th className="px-3 py-2 text-right">Elapsed</th>
                     <th className="px-3 py-2 text-right">Throughput</th>
-                    <th className="px-3 py-2 text-right">Allocated</th>
+                    <th className="px-3 py-2 text-right">Peak process RSS</th>
                     <th className="px-3 py-2 text-center">Status</th>
                   </tr>
                 </thead>
@@ -113,7 +113,7 @@ export const BenchmarkModal: React.FC<BenchmarkModalProps> = ({ isOpen, onClose 
                         {Math.round(r.throughput_ops_per_sec).toLocaleString()} ops/s
                       </td>
                       <td className="px-3 py-2 text-right text-slate-500">
-                        {r.memory_allocated_kb.toLocaleString()} KB
+                        {r.memory_peak_rss_kb?.toLocaleString() ?? 'Unmeasured'} KB
                       </td>
                       <td className="px-3 py-2 text-center">
                         <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800">
@@ -151,7 +151,7 @@ export const BenchmarkModal: React.FC<BenchmarkModalProps> = ({ isOpen, onClose 
                   <span className="font-semibold text-slate-700">
                     Resource Gate:{' '}
                     <span className="text-emerald-700">
-                      {report.passed_resource_gate ? 'PASSED' : 'FAILED'}
+                      {report.passed_resource_gate === null ? 'UNMEASURED' : report.passed_resource_gate ? 'PASSED' : 'FAILED'}
                     </span>
                   </span>
                 </div>

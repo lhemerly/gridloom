@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { X, CheckCircle, AlertTriangle, Trash2, ArrowRight, ShieldCheck, RefreshCw } from 'lucide-react';
+import { displayValue } from '../utils/values';
 import { api } from '../api';
 import { WritebackReviewItem, AuditRecord } from '../types';
 
@@ -79,7 +80,8 @@ export const StagedReviewModal: React.FC<StagedReviewModalProps> = ({
   if (!isOpen) return null;
 
   const hasConflicts = reviewItems.some((item) => item.conflict_status !== 'NoConflict');
-  const allCanApply = reviewItems.length > 0 && reviewItems.every((item) => item.can_apply);
+  const nextConnection = reviewItems[0]?.patch.connection_name;
+  const allCanApply = reviewItems.length > 0 && reviewItems.filter(i => i.patch.connection_name === nextConnection).every(i => i.can_apply);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
@@ -133,7 +135,7 @@ export const StagedReviewModal: React.FC<StagedReviewModalProps> = ({
           <div className="flex items-center gap-2">
             <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0" />
             <span>
-              <strong>Safe Writeback Protocol:</strong> All edits are executed in a single atomic database
+              <strong>Safe Writeback Protocol:</strong> All edits for one connection are executed in a single atomic database
               transaction using NULL-safe optimistic concurrency. If any row was modified or deleted
               externally, the entire changeset is safely rolled back without data loss.
             </span>
@@ -186,7 +188,7 @@ export const StagedReviewModal: React.FC<StagedReviewModalProps> = ({
                           <span>{patch.table_name}</span>
                         </td>
                         <td className="px-3 py-2 font-mono text-slate-600">
-                          {patch.pk_columns.map((c, i) => `${c}=${patch.pk_values[i]}`).join(', ')}
+                          {patch.pk_columns.map((c, i) => `${c}=${displayValue(patch.pk_values[i])}`).join(', ')}
                         </td>
                         <td className="px-3 py-2 font-mono font-medium text-slate-800">
                           {patch.column_name}
@@ -195,14 +197,14 @@ export const StagedReviewModal: React.FC<StagedReviewModalProps> = ({
                           {patch.original_value === null ? (
                             <span className="italic">NULL</span>
                           ) : (
-                            String(patch.original_value)
+                            displayValue(patch.original_value)
                           )}
                         </td>
                         <td className="px-3 py-2 font-mono font-bold text-emerald-700 bg-emerald-50/50">
                           {patch.proposed_value === null ? (
                             <span className="italic">NULL</span>
                           ) : (
-                            String(patch.proposed_value)
+                            displayValue(patch.proposed_value)
                           )}
                         </td>
                         <td className="px-3 py-2">
@@ -219,7 +221,7 @@ export const StagedReviewModal: React.FC<StagedReviewModalProps> = ({
                           ) : (
                             <span className="inline-flex items-center gap-1 text-[11px] font-bold text-rose-700">
                               <AlertTriangle className="w-3.5 h-3.5 text-rose-600" />
-                              Modified Externally
+                              {'CheckFailed' in conflict_status ? `Check failed: ${conflict_status.CheckFailed.message}` : 'Modified Externally'}
                             </span>
                           )}
                         </td>
@@ -264,7 +266,7 @@ export const StagedReviewModal: React.FC<StagedReviewModalProps> = ({
               disabled={loading || !allCanApply || reviewItems.length === 0}
               className="flex items-center gap-1.5 px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded font-bold shadow-sm transition-colors disabled:opacity-50"
             >
-              <span>Confirm & Apply to Database</span>
+              <span>Apply to {nextConnection ?? 'Database'}</span>
               <ArrowRight className="w-3.5 h-3.5" />
             </button>
           </div>

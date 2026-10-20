@@ -16,7 +16,7 @@ use crate::writeback::StagedRepository;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::{BufReader, BufWriter};
+use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -175,7 +175,11 @@ impl Workbook {
         }
     }
 
-    pub fn add_sqlite_connection<P: AsRef<Path>>(&mut self, name: &str, path: P) -> Result<(), CellError> {
+    pub fn add_sqlite_connection<P: AsRef<Path>>(
+        &mut self,
+        name: &str,
+        path: P,
+    ) -> Result<(), CellError> {
         let p_str = path.as_ref().to_string_lossy().to_string();
         let conn = DbConnection::open_sqlite(&path)?;
         self.connections.insert(name.to_string(), conn);
@@ -204,7 +208,11 @@ impl Workbook {
         Ok(())
     }
 
-    pub fn add_duckdb_connection<P: AsRef<Path>>(&mut self, name: &str, path: P) -> Result<(), CellError> {
+    pub fn add_duckdb_connection<P: AsRef<Path>>(
+        &mut self,
+        name: &str,
+        path: P,
+    ) -> Result<(), CellError> {
         let p_str = path.as_ref().to_string_lossy().to_string();
         let conn = DbConnection::open_duckdb(&path)?;
         self.connections.insert(name.to_string(), conn);
@@ -269,6 +277,57 @@ impl Workbook {
         Ok(source)
     }
 
+    pub fn refresh_source(&mut self, name: &str) -> Result<(), CellError> {
+        let source = self.named_sources.get(name).ok_or(CellError::Name)?;
+        let conn = self
+            .connections
+            .get(&source.connection_name)
+            .ok_or(CellError::Ref)?;
+        let result = conn.execute_read_query(&source.sql, &[])?;
+        let columns: Vec<_> = result.columns.iter().map(|c| c.name.clone()).collect();
+        let mut sheets = self.sheets.clone();
+        for sheet in sheets.values_mut() {
+            for table in sheet.tables.values_mut().filter(|t| t.source_name == name) {
+                let resized = WorksheetTable::new(
+                    table.name.clone(),
+                    name.to_string(),
+                    table.anchor,
+                    columns.clone(),
+                    result.rows.len() as u32,
+                );
+                table.columns = resized.columns;
+                table.range = resized.range;
+            }
+            for table in sheet.tables.values().filter(|t| t.source_name == name) {
+                if sheet
+                    .tables
+                    .values()
+                    .any(|other| other.name != table.name && other.range.intersects(&table.range))
+                    || sheet
+                        .cells
+                        .values()
+                        .any(|c| table.range.contains(c.coord) && (!c.raw_input.is_empty()))
+                    || sheet
+                        .spills
+                        .active_spills
+                        .values()
+                        .any(|s| s.range.intersects(&table.range))
+                {
+                    return Err(CellError::Spill);
+                }
+                sheet.max_rows = sheet.max_rows.max(table.range.end_row + 1);
+                sheet.max_cols = sheet.max_cols.max(table.range.end_col + 1);
+            }
+        }
+        self.sheets = sheets;
+        self.named_sources.get_mut(name).unwrap().last_result = Some(result);
+        let sheet_names: Vec<_> = self.sheets.keys().cloned().collect();
+        for sheet_name in sheet_names {
+            self.recalculate(&sheet_name)?;
+        }
+        Ok(())
+    }
+
     pub fn insert_table(
         &mut self,
         sheet_name: &str,
@@ -316,12 +375,18 @@ impl Workbook {
         Ok(table)
     }
 
-    pub fn set_cell(&mut self, sheet_name: &str, coord: CellCoord, raw_input: String) -> Result<(), CellError> {
+    pub fn set_cell(
+        &mut self,
+        sheet_name: &str,
+        coord: CellCoord,
+        raw_input: String,
+    ) -> Result<(), CellError> {
         let sheet = self
             .sheets
             .get_mut(sheet_name)
             .ok_or_else(|| CellError::Ref)?;
 
+        sheet.spills.clear_anchor(&coord);
         let cell_data = CellData::new(coord, raw_input);
         sheet.cells.insert(coord.to_a1(), cell_data);
 
@@ -335,31 +400,56 @@ impl Workbook {
     }
 
     pub fn recalculate(&mut self, sheet_name: &str) -> Result<(), CellError> {
-        // Collect dirty cells
-        let dirty_coords: Vec<CellCoord> = {
-            let sheet = self.sheets.get(sheet_name).ok_or(CellError::Ref)?;
-            sheet
-                .cells
-                .values()
-                .filter(|c| c.is_dirty || c.formula.is_some())
-                .map(|c| c.coord)
-                .collect()
-        };
-
-        let dirty_nodes: Vec<DepNode> = dirty_coords.into_iter().map(DepNode::Cell).collect();
-        let eval_order = self.dep_graph.get_recalculation_order(&dirty_nodes)?;
-
-        for node in eval_order {
-            if let DepNode::Cell(coord) = node {
-                self.evaluate_single_cell(sheet_name, coord)?;
+        // Build dependencies before evaluating, including the anchors behind visible spill children.
+        // A changed spill shape can reveal new dependencies; repeat until its layout stabilizes.
+        let formulas: Vec<_> = self
+            .sheets
+            .get(sheet_name)
+            .ok_or(CellError::Ref)?
+            .cells
+            .values()
+            .filter_map(|c| c.formula.as_ref().map(|f| (c.coord, f.clone())))
+            .collect();
+        for _ in 0..=formulas.len() {
+            let before: HashMap<_, _> = self.sheets[sheet_name]
+                .spills
+                .active_spills
+                .iter()
+                .map(|(a, s)| (*a, s.range))
+                .collect();
+            let generation = self.dep_graph.generation;
+            self.dep_graph = DependencyGraph::new();
+            self.dep_graph.generation = generation;
+            for (coord, formula) in &formulas {
+                if let Ok(ast) = parse_formula(formula) {
+                    self.extract_ast_dependencies(sheet_name, &DepNode::Cell(*coord), &ast)?;
+                }
+            }
+            let nodes: Vec<_> = formulas.iter().map(|(c, _)| DepNode::Cell(*c)).collect();
+            for node in self.dep_graph.get_recalculation_order(&nodes)? {
+                if let DepNode::Cell(coord) = node {
+                    self.evaluate_single_cell(sheet_name, coord)?;
+                }
+            }
+            let after: HashMap<_, _> = self.sheets[sheet_name]
+                .spills
+                .active_spills
+                .iter()
+                .map(|(a, s)| (*a, s.range))
+                .collect();
+            if before == after {
+                self.dep_graph.generation += 1;
+                return Ok(());
             }
         }
-
-        self.dep_graph.generation += 1;
-        Ok(())
+        Err(CellError::Cycle)
     }
 
-    fn evaluate_single_cell(&mut self, sheet_name: &str, coord: CellCoord) -> Result<(), CellError> {
+    fn evaluate_single_cell(
+        &mut self,
+        sheet_name: &str,
+        coord: CellCoord,
+    ) -> Result<(), CellError> {
         let formula_opt = {
             let sheet = self.sheets.get(sheet_name).ok_or(CellError::Ref)?;
             sheet.get_cell(&coord).and_then(|c| c.formula.clone())
@@ -369,10 +459,6 @@ impl Workbook {
             let ast_result = parse_formula(&formula);
             let eval_value = match ast_result {
                 Ok(ast) => {
-                    // Update dependencies in dep_graph
-                    self.dep_graph.clear_dependencies(&DepNode::Cell(coord));
-                    self.extract_ast_dependencies(&DepNode::Cell(coord), &ast)?;
-
                     let ctx = WorkbookEvalContext {
                         workbook: self,
                         sheet_name,
@@ -389,12 +475,16 @@ impl Workbook {
                 let r_count = rows.len();
                 let c_count = rows.first().map_or(0, |r| r.len());
 
-                let can_spill = sheet.spills.can_spill(coord, r_count, c_count, |c| {
-                    sheet.get_cell(&c).map_or(false, |cell| !cell.evaluated_value.is_blank())
-                });
+                let can_spill = sheet
+                    .spills
+                    .can_spill(coord, r_count, c_count, |c| sheet.is_cell_occupied(c));
 
                 if can_spill {
-                    sheet.spills.register_spill(coord, r_count, c_count);
+                    if r_count > 0 && c_count > 0 {
+                        sheet.spills.register_spill(coord, r_count, c_count);
+                    } else {
+                        sheet.spills.clear_anchor(&coord);
+                    }
                     if let Some(c) = sheet.get_cell_mut(&coord) {
                         c.evaluated_value = eval_value;
                         c.is_dirty = false;
@@ -417,45 +507,67 @@ impl Workbook {
         Ok(())
     }
 
-    fn extract_ast_dependencies(&mut self, node: &DepNode, expr: &crate::ast::Expr) -> Result<(), CellError> {
+    fn extract_ast_dependencies(
+        &mut self,
+        sheet_name: &str,
+        node: &DepNode,
+        expr: &crate::ast::Expr,
+    ) -> Result<(), CellError> {
         use crate::ast::Expr;
         match expr {
             Expr::CellRef(coord) => {
-                self.dep_graph.add_dependency(node.clone(), DepNode::Cell(*coord))?;
+                self.add_cell_dependency(sheet_name, node, *coord)?;
             }
             Expr::RangeRef(range) => {
                 for r in range.start_row..=range.end_row {
                     for c in range.start_col..=range.end_col {
-                        self.dep_graph.add_dependency(node.clone(), DepNode::Cell(CellCoord::new(r, c)))?;
+                        self.add_cell_dependency(sheet_name, node, CellCoord::new(r, c))?;
                     }
                 }
             }
             Expr::SpillRef(coord) => {
-                self.dep_graph.add_dependency(node.clone(), DepNode::Cell(*coord))?;
+                self.dep_graph
+                    .add_dependency(node.clone(), DepNode::Cell(*coord))?;
             }
             Expr::StructuredRef(sref) => {
-                self.dep_graph.add_dependency(node.clone(), DepNode::Table(sref.table_name.clone()))?;
+                self.dep_graph
+                    .add_dependency(node.clone(), DepNode::Table(sref.table_name.clone()))?;
             }
-            Expr::Unary { expr, .. } => self.extract_ast_dependencies(node, expr)?,
+            Expr::Unary { expr, .. } => self.extract_ast_dependencies(sheet_name, node, expr)?,
             Expr::Binary { left, right, .. } => {
-                self.extract_ast_dependencies(node, left)?;
-                self.extract_ast_dependencies(node, right)?;
+                self.extract_ast_dependencies(sheet_name, node, left)?;
+                self.extract_ast_dependencies(sheet_name, node, right)?;
             }
             Expr::FunctionCall { args, .. } => {
                 for arg in args {
-                    self.extract_ast_dependencies(node, arg)?;
+                    self.extract_ast_dependencies(sheet_name, node, arg)?;
                 }
             }
             Expr::ArrayLiteral(rows) => {
                 for row in rows {
                     for cell in row {
-                        self.extract_ast_dependencies(node, cell)?;
+                        self.extract_ast_dependencies(sheet_name, node, cell)?;
                     }
                 }
             }
             _ => {}
         }
         Ok(())
+    }
+
+    fn add_cell_dependency(
+        &mut self,
+        sheet_name: &str,
+        node: &DepNode,
+        coord: CellCoord,
+    ) -> Result<(), CellError> {
+        let anchor = self.sheets[sheet_name]
+            .spills
+            .get_spill_at(&coord)
+            .map(|s| s.anchor)
+            .unwrap_or(coord);
+        self.dep_graph
+            .add_dependency(node.clone(), DepNode::Cell(anchor))
     }
 
     pub fn get_viewport(&self, req: &ViewportRequest) -> Result<ViewportResponse, CellError> {
@@ -509,15 +621,38 @@ impl Workbook {
                         if let Some(source) = self.named_sources.get(&table.source_name) {
                             if let Some(res) = &source.last_result {
                                 if let Some(row_data) = res.rows.get(row_offset) {
-                                    let mut val = row_data.get(col_offset).cloned().unwrap_or(Value::Blank);
-                                    let col_name = table.columns.get(col_offset).cloned().unwrap_or_default();
+                                    let mut val =
+                                        row_data.get(col_offset).cloned().unwrap_or(Value::Blank);
+                                    let col_name =
+                                        table.columns.get(col_offset).cloned().unwrap_or_default();
 
                                     // Check staged overlay
                                     let mut is_staged = false;
                                     for patch in self.staged.patches.values() {
-                                        if patch.table_name == table.source_name
-                                            && patch.column_name == col_name
-                                        {
+                                        let matches_row =
+                                            source.lineage.as_ref().is_some_and(|lineage| {
+                                                patch.connection_name == source.connection_name
+                                                    && lineage.base_table.as_deref()
+                                                        == Some(&patch.table_name)
+                                                    && !patch.pk_columns.is_empty()
+                                                    && patch.pk_columns.len()
+                                                        == patch.pk_values.len()
+                                                    && patch
+                                                        .pk_columns
+                                                        .iter()
+                                                        .zip(&patch.pk_values)
+                                                        .all(|(key, value)| {
+                                                            res.columns
+                                                                .iter()
+                                                                .position(|c| c.name == *key)
+                                                                .and_then(|idx| row_data.get(idx))
+                                                                .is_some_and(|actual| {
+                                                                    actual
+                                                                        .is_not_distinct_from(value)
+                                                                })
+                                                        })
+                                            });
+                                        if matches_row && patch.column_name == col_name {
                                             val = patch.proposed_value.clone();
                                             is_staged = true;
                                             break;
@@ -583,13 +718,21 @@ impl Workbook {
 
                 // 3. Regular cell
                 if let Some(cell) = sheet.get_cell(&coord) {
-                    let is_err = cell.evaluated_value.is_error();
+                    let visible_value = match &cell.evaluated_value {
+                        Value::Array(rows) => rows
+                            .first()
+                            .and_then(|r| r.first())
+                            .cloned()
+                            .unwrap_or(Value::Blank),
+                        value => value.clone(),
+                    };
+                    let is_err = visible_value.is_error();
                     cells_data.insert(
                         a1,
                         CellRenderData {
                             coord,
-                            display_text: cell.evaluated_value.to_string_repr(),
-                            raw_value: cell.evaluated_value.clone(),
+                            display_text: visible_value.to_string_repr(),
+                            raw_value: visible_value,
                             formula: cell.formula.clone(),
                             number_format: cell.number_format.clone(),
                             is_staged: false,
@@ -617,10 +760,7 @@ impl Workbook {
     }
 
     pub fn compute_pivot_result(&self, name: &str) -> Result<PivotResult, CellError> {
-        let pivot_def = self
-            .pivots
-            .get(name)
-            .ok_or_else(|| CellError::Name)?;
+        let pivot_def = self.pivots.get(name).ok_or_else(|| CellError::Name)?;
 
         let source = self
             .named_sources
@@ -637,10 +777,7 @@ impl Workbook {
     }
 
     pub fn compute_chart_data(&self, id: &str) -> Result<ChartData, CellError> {
-        let chart_def = self
-            .charts
-            .get(id)
-            .ok_or_else(|| CellError::Name)?;
+        let chart_def = self.charts.get(id).ok_or_else(|| CellError::Name)?;
 
         let source = self
             .named_sources
@@ -660,7 +797,10 @@ impl Workbook {
 
         let mut categories = Vec::new();
         for r in &res.rows {
-            categories.push(r.get(cat_col_idx).map_or(String::new(), |v| v.to_string_repr()));
+            categories.push(
+                r.get(cat_col_idx)
+                    .map_or(String::new(), |v| v.to_string_repr()),
+            );
         }
 
         let mut series_data = Vec::new();
@@ -690,7 +830,10 @@ impl Workbook {
         })
     }
 
-    pub fn apply_writeback(&mut self, connection_name: &str) -> Result<crate::writeback::AuditRecord, CellError> {
+    pub fn apply_writeback(
+        &mut self,
+        connection_name: &str,
+    ) -> Result<crate::writeback::AuditRecord, CellError> {
         let conn = self
             .connections
             .get(connection_name)
@@ -715,10 +858,14 @@ impl Workbook {
 
         let file = File::create(&tmp_path)
             .map_err(|e| CellError::Sql(format!("Failed to create save file: {}", e)))?;
-        let writer = BufWriter::new(file);
-        serde_json::to_writer_pretty(writer, &serialized)
+        let mut writer = BufWriter::new(file);
+        serde_json::to_writer_pretty(&mut writer, &serialized)
             .map_err(|e| CellError::Sql(format!("Failed to serialize workbook: {}", e)))?;
 
+        writer
+            .flush()
+            .map_err(|e| CellError::Sql(format!("Failed to flush workbook: {}", e)))?;
+        drop(writer);
         // Atomic replace
         fs::rename(&tmp_path, &p)
             .map_err(|e| CellError::Sql(format!("Failed to commit atomic save: {}", e)))?;
@@ -808,12 +955,34 @@ impl<'a> EvaluationContext for WorkbookEvalContext<'a> {
             }
         }
 
+        if let Some(spill) = sheet.spills.get_spill_at(&coord) {
+            {
+                if let Some(cell) = sheet.get_cell(&spill.anchor) {
+                    if let Value::Array(rows) = &cell.evaluated_value {
+                        return Ok(rows
+                            .get((coord.row - spill.anchor.row) as usize)
+                            .and_then(|r| r.get((coord.col - spill.anchor.col) as usize))
+                            .cloned()
+                            .unwrap_or(Value::Blank));
+                    }
+                }
+            }
+        }
         // 2. Regular cell
         if let Some(cell) = sheet.get_cell(&coord) {
             Ok(cell.evaluated_value.clone())
         } else {
             Ok(Value::Blank)
         }
+    }
+
+    fn get_spill_values(&self, coord: CellCoord) -> Result<Value, CellError> {
+        self.workbook
+            .sheets
+            .get(self.sheet_name)
+            .and_then(|s| s.get_cell(&coord))
+            .map(|c| c.evaluated_value.clone())
+            .ok_or(CellError::Ref)
     }
 
     fn get_range_values(&self, range: CellRange) -> Result<Value, CellError> {
@@ -845,7 +1014,12 @@ impl<'a> EvaluationContext for WorkbookEvalContext<'a> {
         self.get_range_values(range)
     }
 
-    fn execute_sql_value(&self, connection_name: &str, sql: &str, params: &[Value]) -> Result<Value, CellError> {
+    fn execute_sql_value(
+        &self,
+        connection_name: &str,
+        sql: &str,
+        params: &[Value],
+    ) -> Result<Value, CellError> {
         let conn = self
             .workbook
             .connections
@@ -865,7 +1039,12 @@ impl<'a> EvaluationContext for WorkbookEvalContext<'a> {
         }
     }
 
-    fn execute_sql_table(&self, connection_name: &str, sql: &str, params: &[Value]) -> Result<Value, CellError> {
+    fn execute_sql_table(
+        &self,
+        connection_name: &str,
+        sql: &str,
+        params: &[Value],
+    ) -> Result<Value, CellError> {
         let conn = self
             .workbook
             .connections

@@ -1,3 +1,4 @@
+import { displayValue } from '../utils/values';
 import React, { useState, useEffect } from 'react';
 import { X, Play, CheckCircle, AlertCircle, Sparkles, Table as TableIcon, ArrowRight } from 'lucide-react';
 import { api } from '../api';
@@ -260,7 +261,7 @@ export const QueryEditorModal: React.FC<QueryEditorModalProps> = ({
                       <tr key={rIdx} className="hover:bg-slate-50">
                         {row.map((val, cIdx) => (
                           <td key={cIdx} className="px-3 py-1.5 font-mono text-slate-700 truncate max-w-[200px]">
-                            {val === null ? <span className="text-slate-400 italic">NULL</span> : String(val)}
+                            {val === null ? <span className="text-slate-400 italic">NULL</span> : displayValue(val)}
                           </td>
                         ))}
                       </tr>

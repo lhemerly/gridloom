@@ -63,7 +63,7 @@ export const ChartModal: React.FC<ChartModalProps> = ({ isOpen, onClose, tables 
         id: `chart_${Date.now()}`,
         title: chartTitle,
         chart_type: chartType,
-        source_table: sourceTable,
+        source_table: tables.find(t => t.name === sourceTable)?.source_name ?? sourceTable,
         category_column: categoryCol,
         series: [{ name: valueCol, value_column: valueCol }],
       };

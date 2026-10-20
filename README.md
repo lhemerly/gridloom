@@ -24,7 +24,7 @@ The database remains in its original format. Editing an eligible source-backed t
 - 🌊 **Dynamic Array Spills**: Excel-style dynamic spilling with automatic result region reservation and `#SPILL!` collision detection.
 - 🏷️ **Structured References**: Reference table columns directly with `Table[Column]` and `Table[@Column]` syntax.
 - 📊 **Pivots & Visual Charts**: Interactive pivot table generation (Sum, Count, Average, Min, Max) and responsive SVG charts (Column, Bar, Line, Pie, Scatter).
-- ⚡ **High-Performance Virtualized Grid**: Smooth rendering over millions of cells with fixed-memory viewport slicing.
+- ⚡ **High-Performance Virtualized Grid**: Renders a bounded viewport; query results are currently fully materialized in memory.
 - 💾 **Atomic File Package**: Workbooks save connections, layouts, formulas, and pending changes with atomic replacement (`.gridloom`).
 
 ---
@@ -131,17 +131,11 @@ Gridloom guarantees exact arithmetic precision (`rust_decimal::Decimal`), distin
 
 ## V1 Performance Acceptance Protocol
 
-Gridloom enforces a standardized automated benchmark suite validating interactive responsiveness and bounded resource usage:
+The benchmark runner measures four smoke-test workloads: 100 formula edits, a DuckDB aggregation over 100,000 generated rows, 200 scalar XLOOKUP evaluations over 1,000-element arrays, and a 1,581-cell viewport.
 
-| Workload | Target | Measured Throughput | Memory Est. | Status |
-|---|---|---|---|---|
-| **1. Small Recalculation Chain** | 100 interdependent cells | 386.8 ops/sec | 16 KB | **PASSED** |
-| **2. DuckDB Analytical Scan** | 100,000 rows aggregation | 12.9M ops/sec (7.74 ms) | 1,024 KB | **PASSED** |
-| **3. Vectorized XLOOKUP** | Exact match lookups | 8,182 ops/sec | 32 KB | **PASSED** |
-| **4. Virtual Viewport Slicing** | 1,581 cells rendered window | 614,929 ops/sec (2.57 ms) | 64 KB | **PASSED** |
+Run `cargo run -p gridloom-server -- --bench` for measurements on your machine. Throughput counts actual operations; the formula workload includes recalculation and the lookup workload includes argument-array clones. Query APIs fully materialize results; viewport rendering does not bound query memory or provide database streaming.
 
-- **Correctness Gate**: **PASSED**
-- **Resource Gate**: **PASSED**
+Correctness checks validate the final chain value, aggregate sums and counts, lookup answers, and viewport size. Resource smoke-test budgets are 30 seconds per workload and 1 GiB process peak RSS. Linux reads `VmHWM` from `/proc/self/status`; this is a cumulative process high-water mark, not per-workload allocations. Other hosts report unmeasured memory and an unavailable resource gate. The CLI exits unsuccessfully when either gate fails or resource measurement is unavailable. These smoke tests do not establish production-scale V1 acceptance.
 
 ---
 
@@ -149,7 +143,7 @@ Gridloom enforces a standardized automated benchmark suite validating interactiv
 
 ### Prerequisites
 
-- [Rust 1.80+](https://www.rust-lang.org/tools/install)
+- [Rust 1.88+](https://www.rust-lang.org/tools/install)
 - [Node.js 20+](https://nodejs.org/)
 - WebKitGTK (on Linux for native window shell: `sudo apt-get install libwebkit2gtk-4.1-dev libgtk-3-dev`)
 

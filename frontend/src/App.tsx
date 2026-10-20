@@ -12,10 +12,11 @@ import { AuditLogModal } from './components/AuditLogModal';
 import { BenchmarkModal } from './components/BenchmarkModal';
 import { api } from './api';
 import { ViewportResponse, WorksheetTable } from './types';
+import { parseEdit } from './utils/values';
 import { coordToA1 } from './utils/coords';
 
 export const App: React.FC = () => {
-  const [sheetName] = useState('Sheet1');
+  const [sheetName, setSheetName] = useState('Sheet1');
   const [selectedRow, setSelectedRow] = useState(0);
   const [selectedCol, setSelectedCol] = useState(0);
   const [viewport, setViewport] = useState<ViewportResponse | null>(null);
@@ -52,8 +53,9 @@ export const App: React.FC = () => {
         api.getWorkbook().catch(() => null),
         api.getStaged().catch(() => []),
       ]);
-      if (wb && wb.sheets && wb.sheets[0]) {
-        setTables(wb.sheets[0].tables || []);
+      if (wb) {
+        setSheetName(wb.active_sheet);
+        setTables(wb.sheets.find(s => s.name === wb.active_sheet)?.tables ?? []);
       }
       setStagedCount(staged.length);
     } catch {
@@ -105,16 +107,14 @@ export const App: React.FC = () => {
               const pkCols = src.lineage.primary_keys;
               const pkValues = pkCols.map((pk) => {
                 const pkIdx = src.last_result?.columns.findIndex((c) => c.name === pk);
-                return pkIdx !== undefined && pkIdx >= 0 ? src.last_result?.rows[rowIdxInTable]?.[pkIdx] : null;
+                const value = pkIdx !== undefined && pkIdx >= 0 ? src.last_result?.rows[rowIdxInTable]?.[pkIdx] : undefined;
+                if (!value || value.type === 'Null') throw new Error('Missing primary key value');
+                return value;
               });
 
-              const origVal = existing.raw_value;
-              // Parse proposed value (number vs text)
-              let proposedVal: any = rawInput;
-              const num = Number(rawInput);
-              if (!isNaN(num) && rawInput.trim() !== '') {
-                proposedVal = num;
-              }
+              const origVal = src.last_result.rows[rowIdxInTable]?.[colIdxInTable];
+              if (!origVal) throw new Error('Source row is no longer available; refresh the table');
+              const proposedVal = parseEdit(rawInput, origVal);
 
               // Stage edit!
               await api.stageEdit({
@@ -134,7 +134,9 @@ export const App: React.FC = () => {
             }
           }
         }
+        throw new Error('This table column is read-only');
       }
+      if (existing?.is_table_header) throw new Error('Table headers are read-only');
 
       // Normal spreadsheet cell edit
       await api.setCell(sheetName, row, col, rawInput);

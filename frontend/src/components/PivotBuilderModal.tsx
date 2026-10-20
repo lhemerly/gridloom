@@ -1,3 +1,4 @@
+import { displayValue } from '../utils/values';
 import React, { useState, useEffect } from 'react';
 import { X, PieChart, Play, Table as TableIcon } from 'lucide-react';
 import { api } from '../api';
@@ -54,7 +55,7 @@ export const PivotBuilderModal: React.FC<PivotBuilderModalProps> = ({
     try {
       const def: PivotDefinition = {
         name: pivotName,
-        source_table: sourceTable,
+        source_table: tables.find(t => t.name === sourceTable)?.source_name ?? sourceTable,
         row_fields: [rowField],
         col_fields: colField ? [colField] : [],
         value_field: valField,
@@ -224,13 +225,7 @@ export const PivotBuilderModal: React.FC<PivotBuilderModalProps> = ({
                               cIdx > 0 ? 'text-right' : 'font-medium'
                             }`}
                           >
-                            {val === null ? (
-                              <span className="text-slate-300 italic">0</span>
-                            ) : typeof val === 'number' ? (
-                              val.toLocaleString(undefined, { maximumFractionDigits: 2 })
-                            ) : (
-                              String(val)
-                            )}
+                            {displayValue(val)}
                           </td>
                         ))}
                       </tr>

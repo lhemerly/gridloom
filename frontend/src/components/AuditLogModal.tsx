@@ -1,3 +1,4 @@
+import { displayValue } from '../utils/values';
 import React, { useState, useEffect } from 'react';
 import { X, History, CheckCircle, AlertTriangle, Shield } from 'lucide-react';
 import { api } from '../api';
@@ -111,8 +112,8 @@ export const AuditLogModal: React.FC<AuditLogModalProps> = ({ isOpen, onClose })
                             </span>
                             <span className="text-slate-400 font-bold">&rarr;</span>
                             <span className="text-slate-800 font-medium">{p.column_name}:</span>
-                            <span className="line-through text-slate-400">{String(p.original_value)}</span>
-                            <span className="font-bold text-emerald-700">{String(p.proposed_value)}</span>
+                            <span className="line-through text-slate-400">{displayValue(p.original_value)}</span>
+                            <span className="font-bold text-emerald-700">{displayValue(p.proposed_value)}</span>
                           </span>
                         ))}
                       </div>

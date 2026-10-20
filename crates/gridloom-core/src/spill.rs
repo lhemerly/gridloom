@@ -12,6 +12,7 @@ pub struct DynamicSpill {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SpillManager {
+    #[serde(with = "spill_map")]
     pub active_spills: HashMap<CellCoord, DynamicSpill>,
 }
 
@@ -27,7 +28,13 @@ impl SpillManager {
     }
 
     /// Check if target spill region collides with any occupied cells or existing spills
-    pub fn can_spill<F>(&self, anchor: CellCoord, rows: usize, cols: usize, is_cell_occupied: F) -> bool
+    pub fn can_spill<F>(
+        &self,
+        anchor: CellCoord,
+        rows: usize,
+        cols: usize,
+        is_cell_occupied: F,
+    ) -> bool
     where
         F: Fn(CellCoord) -> bool,
     {
@@ -80,6 +87,35 @@ impl SpillManager {
     }
 
     pub fn get_spill_at(&self, coord: &CellCoord) -> Option<&DynamicSpill> {
-        self.active_spills.values().find(|s| s.range.contains(*coord))
+        self.active_spills
+            .values()
+            .find(|s| s.range.contains(*coord))
+    }
+}
+
+mod spill_map {
+    use super::*;
+    use serde::{Deserializer, Serializer};
+    pub fn serialize<S: Serializer>(
+        map: &HashMap<CellCoord, DynamicSpill>,
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
+        let entries: std::collections::BTreeMap<String, &DynamicSpill> = map
+            .iter()
+            .map(|(coord, spill)| (coord.to_a1(), spill))
+            .collect();
+        entries.serialize(s)
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        d: D,
+    ) -> Result<HashMap<CellCoord, DynamicSpill>, D::Error> {
+        let entries = HashMap::<String, DynamicSpill>::deserialize(d)?;
+        entries
+            .into_iter()
+            .map(|(key, spill)| {
+                let coord = CellCoord::from_a1(&key).map_err(serde::de::Error::custom)?;
+                Ok((coord, spill))
+            })
+            .collect()
     }
 }

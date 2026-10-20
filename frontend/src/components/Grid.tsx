@@ -1,3 +1,4 @@
+import { displayValue } from '../utils/values';
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { ViewportResponse, CellRenderData } from '../types';
 import { colIndexToName, coordToA1 } from '../utils/coords';
@@ -143,7 +144,7 @@ export const Grid: React.FC<GridProps> = ({
   const startInlineEditing = () => {
     const key = coordToA1(selectedRow, selectedCol);
     const cell = viewport?.cells[key];
-    const initial = cell?.formula || (cell?.raw_value !== null && cell?.raw_value !== undefined ? String(cell?.raw_value) : cell?.display_text || '');
+    const initial = cell?.formula || (cell?.raw_value !== null && cell?.raw_value !== undefined ? displayValue(cell.raw_value) : cell?.display_text || '');
     setEditValue(initial);
     setIsEditing(true);
   };

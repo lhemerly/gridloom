@@ -58,10 +58,21 @@ impl DbConnection {
         }
     }
 
-    pub fn execute_read_query(&self, sql: &str, params: &[Value]) -> Result<QueryResult, CellError> {
+    pub fn execute_read_query(
+        &self,
+        sql: &str,
+        params: &[Value],
+    ) -> Result<QueryResult, CellError> {
         match self {
             DbConnection::Sqlite(eng) => eng.execute_read_query(sql, params),
             DbConnection::DuckDb(eng) => eng.execute_read_query(sql, params),
+        }
+    }
+
+    pub fn update_rows(&self, patches: &[crate::writeback::StagedPatch]) -> Result<(), CellError> {
+        match self {
+            Self::Sqlite(engine) => engine.update_rows(patches),
+            Self::DuckDb(engine) => engine.update_rows(patches),
         }
     }
 
@@ -75,12 +86,22 @@ impl DbConnection {
         proposed_val: &Value,
     ) -> Result<(), CellError> {
         match self {
-            DbConnection::Sqlite(eng) => {
-                eng.update_row(table, pk_cols, pk_vals, col_name, original_val, proposed_val)
-            }
-            DbConnection::DuckDb(eng) => {
-                eng.update_row(table, pk_cols, pk_vals, col_name, original_val, proposed_val)
-            }
+            DbConnection::Sqlite(eng) => eng.update_row(
+                table,
+                pk_cols,
+                pk_vals,
+                col_name,
+                original_val,
+                proposed_val,
+            ),
+            DbConnection::DuckDb(eng) => eng.update_row(
+                table,
+                pk_cols,
+                pk_vals,
+                col_name,
+                original_val,
+                proposed_val,
+            ),
         }
     }
 }

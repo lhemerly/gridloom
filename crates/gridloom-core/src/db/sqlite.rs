@@ -84,7 +84,9 @@ impl SqliteEngine {
     pub fn get_table_schema(&self, table_name: &str) -> Result<TableSchema, CellError> {
         let conn = self.conn.lock().unwrap();
         let pragma_sql = format!("PRAGMA table_info(\"{}\")", table_name.replace('"', "\"\""));
-        let mut stmt = conn.prepare(&pragma_sql).map_err(|e| CellError::Sql(e.to_string()))?;
+        let mut stmt = conn
+            .prepare(&pragma_sql)
+            .map_err(|e| CellError::Sql(e.to_string()))?;
 
         let rows = stmt
             .query_map([], |row| {
@@ -118,11 +120,17 @@ impl SqliteEngine {
         })
     }
 
-    pub fn execute_read_query(&self, sql: &str, params: &[Value]) -> Result<QueryResult, CellError> {
+    pub fn execute_read_query(
+        &self,
+        sql: &str,
+        params: &[Value],
+    ) -> Result<QueryResult, CellError> {
         validate_read_only_sql(sql, "sqlite")?;
 
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(sql).map_err(|e| CellError::Sql(e.to_string()))?;
+        let mut stmt = conn
+            .prepare(sql)
+            .map_err(|e| CellError::Sql(e.to_string()))?;
 
         let col_count = stmt.column_count();
         let mut columns = Vec::new();
@@ -136,39 +144,23 @@ impl SqliteEngine {
             });
         }
 
-        let sqlite_params: Vec<SqliteParam> = params.iter().map(|p| SqliteParam(p.clone())).collect();
+        let sqlite_params: Vec<SqliteParam> =
+            params.iter().map(|p| SqliteParam(p.clone())).collect();
         let mut rows_iter = stmt
             .query(params_from_iter(sqlite_params.iter()))
             .map_err(|e| CellError::Sql(e.to_string()))?;
 
         let mut rows = Vec::new();
-        while let Some(row) = rows_iter.next().map_err(|e| CellError::Sql(e.to_string()))? {
+        while let Some(row) = rows_iter
+            .next()
+            .map_err(|e| CellError::Sql(e.to_string()))?
+        {
             let mut row_vals = Vec::new();
             for idx in 0..col_count {
-                let val_ref = row.get_ref(idx).map_err(|e| CellError::Sql(e.to_string()))?;
-                let val = match val_ref {
-                    ValueRef::Null => Value::Null,
-                    ValueRef::Integer(i) => Value::Integer(i),
-                    ValueRef::Real(r) => {
-                        if let Some(d) = Decimal::from_f64(r) {
-                            Value::Decimal(d)
-                        } else {
-                            Value::Float(r)
-                        }
-                    }
-                    ValueRef::Text(bytes) => {
-                        let text = String::from_utf8_lossy(bytes).to_string();
-                        // Check if ISO date
-                        if let Ok(d) = NaiveDate::parse_from_str(&text, "%Y-%m-%d") {
-                            Value::Date(d)
-                        } else if let Ok(ts) = DateTime::parse_from_rfc3339(&text) {
-                            Value::Timestamp(ts.with_timezone(&Utc))
-                        } else {
-                            Value::Text(text)
-                        }
-                    }
-                    ValueRef::Blob(bytes) => Value::Text(format!("<Blob {} bytes>", bytes.len())),
-                };
+                let val_ref = row
+                    .get_ref(idx)
+                    .map_err(|e| CellError::Sql(e.to_string()))?;
+                let val = decode_value(val_ref);
                 row_vals.push(val);
             }
             rows.push(row_vals);
@@ -197,6 +189,58 @@ impl SqliteEngine {
             .transaction()
             .map_err(|e| CellError::Sql(format!("Failed to start transaction: {}", e)))?;
 
+        Self::update_in_transaction(
+            &tx,
+            table,
+            pk_cols,
+            pk_vals,
+            col_name,
+            original_val,
+            proposed_val,
+        )?;
+
+        tx.commit()
+            .map_err(|e| CellError::Sql(format!("Failed to commit update transaction: {}", e)))?;
+
+        Ok(())
+    }
+    /// Holds the connection lock and one transaction for the entire changeset.
+    pub fn update_rows(&self, patches: &[crate::writeback::StagedPatch]) -> Result<(), CellError> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn
+            .transaction()
+            .map_err(|e| CellError::Sql(e.to_string()))?;
+        for patch in patches {
+            Self::update_in_transaction(
+                &tx,
+                &patch.table_name,
+                &patch.pk_columns,
+                &patch.pk_values,
+                &patch.column_name,
+                &patch.original_value,
+                &patch.proposed_value,
+            )?;
+        }
+        tx.commit().map_err(|e| CellError::Sql(e.to_string()))
+    }
+
+    fn update_in_transaction(
+        tx: &rusqlite::Connection,
+        table: &str,
+        pk_cols: &[String],
+        pk_vals: &[Value],
+        col_name: &str,
+        original_val: &Value,
+        proposed_val: &Value,
+    ) -> Result<(), CellError> {
+        if pk_cols.is_empty()
+            || pk_cols.len() != pk_vals.len()
+            || pk_vals.iter().any(|v| v.is_null())
+        {
+            return Err(CellError::Sql(
+                "A complete non-NULL primary key is required".into(),
+            ));
+        }
         // 1. Verify row still exists and original value matches (NULL-safe optimistic concurrency)
         let mut where_clauses = Vec::new();
         let mut check_params: Vec<SqliteParam> = Vec::new();
@@ -214,20 +258,16 @@ impl SqliteEngine {
         );
 
         let current_val: Option<Value> = {
-            let mut stmt = tx.prepare(&check_sql).map_err(|e| CellError::Sql(e.to_string()))?;
+            let mut stmt = tx
+                .prepare(&check_sql)
+                .map_err(|e| CellError::Sql(e.to_string()))?;
             let mut rows = stmt
                 .query(params_from_iter(check_params.iter()))
                 .map_err(|e| CellError::Sql(e.to_string()))?;
 
             if let Some(r) = rows.next().map_err(|e| CellError::Sql(e.to_string()))? {
                 let vref = r.get_ref(0).map_err(|e| CellError::Sql(e.to_string()))?;
-                Some(match vref {
-                    ValueRef::Null => Value::Null,
-                    ValueRef::Integer(i) => Value::Integer(i),
-                    ValueRef::Real(f) => Value::Float(f),
-                    ValueRef::Text(b) => Value::Text(String::from_utf8_lossy(b).to_string()),
-                    _ => Value::Null,
-                })
+                Some(decode_value(vref))
             } else {
                 None
             }
@@ -265,12 +305,11 @@ impl SqliteEngine {
             .execute(&update_sql, params_from_iter(update_params.iter()))
             .map_err(|e| CellError::Sql(format!("Update failed: {}", e)))?;
 
-        if updated_rows == 0 {
-            return Err(CellError::Sql("Update affected 0 rows".to_string()));
+        if updated_rows != 1 {
+            return Err(CellError::Sql(
+                "Update must affect exactly one row".to_string(),
+            ));
         }
-
-        tx.commit()
-            .map_err(|e| CellError::Sql(format!("Failed to commit update transaction: {}", e)))?;
 
         Ok(())
     }
@@ -300,5 +339,31 @@ impl ToSql for SqliteParam {
             Value::Error(e) => Ok(ToSqlOutput::from(e.to_string())),
             Value::Array(_) => Ok(ToSqlOutput::from(self.0.to_string_repr())),
         }
+    }
+}
+
+fn decode_value(val_ref: ValueRef<'_>) -> Value {
+    match val_ref {
+        ValueRef::Null => Value::Null,
+        ValueRef::Integer(i) => Value::Integer(i),
+        ValueRef::Real(r) => {
+            if let Some(d) = Decimal::from_f64(r) {
+                Value::Decimal(d)
+            } else {
+                Value::Float(r)
+            }
+        }
+        ValueRef::Text(bytes) => {
+            let text = String::from_utf8_lossy(bytes).to_string();
+            // Check if ISO date
+            if let Ok(d) = NaiveDate::parse_from_str(&text, "%Y-%m-%d") {
+                Value::Date(d)
+            } else if let Ok(ts) = DateTime::parse_from_rfc3339(&text) {
+                Value::Timestamp(ts.with_timezone(&Utc))
+            } else {
+                Value::Text(text)
+            }
+        }
+        ValueRef::Blob(bytes) => Value::Text(format!("<Blob {} bytes>", bytes.len())),
     }
 }

@@ -14,7 +14,7 @@ pub fn evaluate_expr<C: EvaluationContext + ?Sized>(
         Expr::CellRef(coord) => ctx.get_cell_value(*coord),
         Expr::RangeRef(range) => ctx.get_range_values(*range),
         Expr::SpillRef(coord) => {
-            let anchor_val = ctx.get_cell_value(*coord)?;
+            let anchor_val = ctx.get_spill_values(*coord)?;
             match anchor_val {
                 Value::Array(_) => Ok(anchor_val),
                 _ => Err(CellError::Ref),
@@ -102,9 +102,50 @@ pub fn evaluate_expr<C: EvaluationContext + ?Sized>(
             }
         }
         Expr::FunctionCall { name, args } => {
+            let upper = name.to_uppercase();
+            match upper.as_str() {
+                "IF" => {
+                    if !(2..=3).contains(&args.len()) {
+                        return Err(CellError::Value);
+                    }
+                    let cond = evaluate_expr(&args[0], ctx)?.to_bool()?;
+                    return match args.get(if cond { 1 } else { 2 }) {
+                        Some(branch) => evaluate_expr(branch, ctx),
+                        None => Ok(Value::Boolean(false)),
+                    };
+                }
+                "IFS" => {
+                    if args.is_empty() || args.len() % 2 != 0 {
+                        return Err(CellError::Value);
+                    }
+                    for pair in args.chunks(2) {
+                        if evaluate_expr(&pair[0], ctx)?.to_bool()? {
+                            return evaluate_expr(&pair[1], ctx);
+                        }
+                    }
+                    return Err(CellError::NA);
+                }
+                "IFERROR" | "IFNA" => {
+                    if args.len() != 2 {
+                        return Err(CellError::Value);
+                    }
+                    let value = evaluate_expr(&args[0], ctx).unwrap_or_else(Value::Error);
+                    let caught = if upper == "IFERROR" {
+                        value.is_error()
+                    } else {
+                        matches!(value, Value::Error(CellError::NA))
+                    };
+                    return if caught {
+                        evaluate_expr(&args[1], ctx)
+                    } else {
+                        Ok(value)
+                    };
+                }
+                _ => {}
+            }
             let mut evaluated_args = Vec::new();
             for arg_expr in args {
-                evaluated_args.push(evaluate_expr(arg_expr, ctx)?);
+                evaluated_args.push(evaluate_expr(arg_expr, ctx).unwrap_or_else(Value::Error));
             }
             call_function(name, &evaluated_args, ctx)
         }

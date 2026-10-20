@@ -23,6 +23,7 @@ pub struct StagedPatch {
 pub enum ConflictStatus {
     NoConflict,
     RowDeletedExternally,
+    CheckFailed { message: String },
     RowModifiedExternally { current_value: Value },
 }
 
@@ -81,7 +82,11 @@ impl StagedRepository {
             if p.connection_name == connection_name
                 && p.table_name == table_name
                 && p.pk_columns == pk_columns
-                && p.pk_values == pk_values
+                && p.pk_values.len() == pk_values.len()
+                && p.pk_values
+                    .iter()
+                    .zip(&pk_values)
+                    .all(|(a, b)| a.is_not_distinct_from(b))
                 && p.column_name == column_name
             {
                 Some(*id)
@@ -130,10 +135,14 @@ impl StagedRepository {
     }
 
     /// Check conflicts against the current database state
-    pub fn review(&self, conn: &DbConnection) -> Vec<WritebackReviewItem> {
+    pub fn review(&self, conn: &DbConnection, connection_name: &str) -> Vec<WritebackReviewItem> {
         let mut review_items = Vec::new();
 
-        for patch in self.patches.values() {
+        for patch in self
+            .patches
+            .values()
+            .filter(|p| p.connection_name == connection_name)
+        {
             let conflict_status = self.check_patch_conflict(conn, patch);
             let can_apply = conflict_status == ConflictStatus::NoConflict;
             review_items.push(WritebackReviewItem {
@@ -148,6 +157,11 @@ impl StagedRepository {
     }
 
     fn check_patch_conflict(&self, conn: &DbConnection, patch: &StagedPatch) -> ConflictStatus {
+        if patch.pk_columns.is_empty() || patch.pk_columns.len() != patch.pk_values.len() {
+            return ConflictStatus::CheckFailed {
+                message: "A complete primary key is required".into(),
+            };
+        }
         let mut where_parts = Vec::new();
         let mut params = Vec::new();
         for (col, val) in patch.pk_columns.iter().zip(patch.pk_values.iter()) {
@@ -171,11 +185,15 @@ impl StagedRepository {
                     if current.is_not_distinct_from(&patch.original_value) {
                         ConflictStatus::NoConflict
                     } else {
-                        ConflictStatus::RowModifiedExternally { current_value: current }
+                        ConflictStatus::RowModifiedExternally {
+                            current_value: current,
+                        }
                     }
                 }
             }
-            Err(_) => ConflictStatus::RowDeletedExternally,
+            Err(e) => ConflictStatus::CheckFailed {
+                message: e.to_string(),
+            },
         }
     }
 
@@ -187,10 +205,9 @@ impl StagedRepository {
         connection_name: &str,
     ) -> Result<AuditRecord, CellError> {
         let patches_to_apply: Vec<StagedPatch> = self
-            .patches
-            .values()
+            .list_patches()
+            .into_iter()
             .filter(|p| p.connection_name == connection_name)
-            .cloned()
             .collect();
 
         if patches_to_apply.is_empty() {
@@ -209,8 +226,15 @@ impl StagedRepository {
                     table_name: first_table.clone(),
                     applied_at: Utc::now(),
                     patch_count: patches_to_apply.len(),
-                    status: AuditStatus::RolledBackConflict,
-                    error_message: Some(format!("Pre-flight conflict check failed: {:?}", conflict)),
+                    status: if matches!(&conflict, ConflictStatus::CheckFailed { .. }) {
+                        AuditStatus::RolledBackError
+                    } else {
+                        AuditStatus::RolledBackConflict
+                    },
+                    error_message: Some(format!(
+                        "Pre-flight conflict check failed: {:?}",
+                        conflict
+                    )),
                     patches: patches_to_apply.clone(),
                 };
                 self.audit_log.push(rec.clone());
@@ -221,31 +245,22 @@ impl StagedRepository {
             }
         }
 
-        // 2. Execute updates
-        for patch in &patches_to_apply {
-            let res = conn.update_row(
-                &patch.table_name,
-                &patch.pk_columns,
-                &patch.pk_values,
-                &patch.column_name,
-                &patch.original_value,
-                &patch.proposed_value,
-            );
-
-            if let Err(e) = res {
-                let rec = AuditRecord {
-                    id: Uuid::new_v4(),
-                    connection_name: connection_name.to_string(),
-                    table_name: first_table.clone(),
-                    applied_at: Utc::now(),
-                    patch_count: patches_to_apply.len(),
-                    status: AuditStatus::RolledBackError,
-                    error_message: Some(e.to_string()),
-                    patches: patches_to_apply.clone(),
-                };
-                self.audit_log.push(rec);
-                return Err(CellError::Sql(format!("Writeback failed and rolled back: {}", e)));
-            }
+        // The engines perform every optimistic check and update under the same transaction.
+        if let Err(e) = conn.update_rows(&patches_to_apply) {
+            self.audit_log.push(AuditRecord {
+                id: Uuid::new_v4(),
+                connection_name: connection_name.to_string(),
+                table_name: first_table.clone(),
+                applied_at: Utc::now(),
+                patch_count: patches_to_apply.len(),
+                status: AuditStatus::RolledBackError,
+                error_message: Some(e.to_string()),
+                patches: patches_to_apply.clone(),
+            });
+            return Err(CellError::Sql(format!(
+                "Writeback failed and rolled back: {}",
+                e
+            )));
         }
 
         // 3. Remove applied patches from staged repository

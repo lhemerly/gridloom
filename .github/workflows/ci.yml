@@ -28,6 +28,30 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
+      # Cached build-script output can survive without DuckDB's downloaded shared library.
+      - name: Install locked DuckDB native library
+        shell: bash
+        run: |
+          duckdb_version=$(python3 - <<'PY'
+          import tomllib
+          from pathlib import Path
+          packages = tomllib.loads(Path("Cargo.lock").read_text())["package"]
+          version = next(p["version"] for p in packages if p["name"] == "libduckdb-sys")
+          encoded = int(version.split(".")[1])
+          print(f"{encoded // 10000}.{encoded // 100 % 100}.{encoded % 100}")
+          PY
+          )
+          duckdb_native_dir="$RUNNER_TEMP/gridloom-duckdb/$duckdb_version"
+          mkdir -p "$duckdb_native_dir"
+          curl --fail --location --retry 3 \
+            "https://github.com/duckdb/duckdb/releases/download/v$duckdb_version/libduckdb-linux-amd64.zip" \
+            --output "$duckdb_native_dir/libduckdb.zip"
+          unzip -q -o "$duckdb_native_dir/libduckdb.zip" -d "$duckdb_native_dir"
+          test -s "$duckdb_native_dir/libduckdb.so"
+          echo "DUCKDB_LIB_DIR=$duckdb_native_dir" >> "$GITHUB_ENV"
+          echo "DUCKDB_INCLUDE_DIR=$duckdb_native_dir" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$duckdb_native_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+
       - name: Check workspace
         run: cargo check --workspace
 
@@ -51,6 +75,10 @@ jobs:
       - name: Install dependencies
         working-directory: ./frontend
         run: npm ci
+
+      - name: Test frontend value contracts
+        working-directory: ./frontend
+        run: npm test
 
       - name: Build frontend
         working-directory: ./frontend

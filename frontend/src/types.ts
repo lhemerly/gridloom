@@ -1,3 +1,20 @@
+export type CellValue =
+  | { type: 'Blank' | 'EmptyText' | 'Null' }
+  | { type: 'Text' | 'Date' | 'Timestamp' | 'Decimal'; value: string }
+  | { type: 'Integer' | 'Float'; value: number }
+  | { type: 'Boolean'; value: boolean }
+  | { type: 'Array'; value: CellValue[][] }
+  | { type: 'Error'; value: unknown };
+
+export interface WorkbookSummary {
+  active_sheet: string;
+  sheets: { name: string; tables: WorksheetTable[] }[];
+  connections: string[];
+  sources: string[];
+  staged_patches_count: number;
+  file_path: string | null;
+}
+
 export interface CellCoord {
   row: number;
   col: number;
@@ -6,7 +23,7 @@ export interface CellCoord {
 export interface CellRenderData {
   coord: CellCoord;
   display_text: string;
-  raw_value: any;
+  raw_value: CellValue;
   formula?: string;
   number_format?: string;
   is_staged: boolean;
@@ -43,7 +60,7 @@ export interface TableSchema {
 
 export interface QueryResult {
   columns: ColumnMeta[];
-  rows: any[][];
+  rows: CellValue[][];
   total_rows: number;
 }
 
@@ -76,16 +93,16 @@ export interface StagedPatch {
   connection_name: string;
   table_name: string;
   pk_columns: string[];
-  pk_values: any[];
+  pk_values: CellValue[];
   column_name: string;
-  original_value: any;
-  proposed_value: any;
+  original_value: CellValue;
+  proposed_value: CellValue;
   staged_at: string;
 }
 
 export interface WritebackReviewItem {
   patch: StagedPatch;
-  conflict_status: 'NoConflict' | 'RowDeletedExternally' | { RowModifiedExternally: { current_value: any } };
+  conflict_status: 'NoConflict' | 'RowDeletedExternally' | { CheckFailed: { message: string } } | { RowModifiedExternally: { current_value: any } };
   can_apply: boolean;
 }
 
@@ -113,7 +130,7 @@ export interface PivotDefinition {
 
 export interface PivotResult {
   headers: string[];
-  rows: any[][];
+  rows: CellValue[][];
 }
 
 export type ChartType = 'Line' | 'Bar' | 'Column' | 'Scatter' | 'Pie';
@@ -149,7 +166,7 @@ export interface BenchmarkResult {
   operations: number;
   elapsed_ms: number;
   throughput_ops_per_sec: number;
-  memory_allocated_kb: number;
+  memory_peak_rss_kb: number | null;
   status: string;
   notes: string;
 }
@@ -159,5 +176,5 @@ export interface BenchmarkSuiteReport {
   total_elapsed_ms: number;
   results: BenchmarkResult[];
   passed_correctness_gate: boolean;
-  passed_resource_gate: boolean;
+  passed_resource_gate: boolean | null;
 }

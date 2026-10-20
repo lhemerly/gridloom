@@ -1,0 +1,17 @@
+[package]
+name = "gridloom-desktop"
+version = "0.1.0"
+edition = "2021"
+description = "Desktop application shell for Gridloom"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+gridloom-core = { workspace = true }
+gridloom-server = { path = "../gridloom-server" }
+tokio = { workspace = true }
+wry = { workspace = true }
+tao = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }

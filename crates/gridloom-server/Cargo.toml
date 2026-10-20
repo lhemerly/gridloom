@@ -1,0 +1,32 @@
+[package]
+name = "gridloom-server"
+version = "0.1.0"
+edition = "2021"
+description = "Embedded HTTP/JSON local server for Gridloom desktop engine"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+gridloom-core = { workspace = true }
+rusqlite = { workspace = true }
+duckdb = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }
+tower-http = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+rust_decimal = { workspace = true }
+chrono = { workspace = true }
+tempfile = { workspace = true }
+
+[lib]
+name = "gridloom_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "gridloom-server"
+path = "src/main.rs"

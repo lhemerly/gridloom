@@ -1,0 +1,23 @@
+[package]
+name = "gridloom-core"
+version = "0.1.0"
+edition = "2021"
+description = "Core calculation, database connection, lineage, writeback, and formula engine for Gridloom"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+rusqlite = { workspace = true }
+duckdb = { workspace = true }
+rust_decimal = { workspace = true }
+rust_decimal_macros = { workspace = true }
+chrono = { workspace = true }
+sqlparser = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

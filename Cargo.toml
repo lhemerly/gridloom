@@ -1,0 +1,30 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/gridloom-core",
+    "crates/gridloom-server",
+    "crates/gridloom-desktop",
+]
+
+[workspace.dependencies]
+gridloom-core = { path = "crates/gridloom-core" }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+duckdb = { version = "1.10506.1", features = ["chrono", "rust_decimal"] }
+rust_decimal = { version = "1.36", features = ["serde-str", "maths"] }
+rust_decimal_macros = "1.36"
+chrono = { version = "0.4", features = ["serde"] }
+sqlparser = "0.63"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+anyhow = "1.0"
+tokio = { version = "1.43", features = ["full"] }
+axum = { version = "0.8", features = ["ws", "macros"] }
+tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
+uuid = { version = "1.11", features = ["v4", "serde"] }
+tempfile = "3.16"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+wry = "0.57"
+tao = "0.37"
+clap = { version = "4.5", features = ["derive"] }

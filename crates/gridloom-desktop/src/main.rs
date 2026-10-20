@@ -5,7 +5,10 @@ use std::env;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Parser, Debug)]
-#[command(name = "gridloom", about = "Gridloom - Local-first SQL Worksheet Desktop App")]
+#[command(
+    name = "gridloom",
+    about = "Gridloom - Local-first SQL Worksheet Desktop App"
+)]
 struct Args {
     #[arg(short, long, default_value_t = 0)]
     port: u16,
@@ -23,7 +26,9 @@ struct Args {
 #[allow(unreachable_code)]
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+        )
         .with(tracing_subscriber::fmt::layer())
         .init();
 
@@ -40,29 +45,54 @@ fn main() -> anyhow::Result<()> {
             println!("  Operations:  {}", r.operations);
             println!("  Elapsed:     {:.2} ms", r.elapsed_ms);
             println!("  Throughput:  {:.1} ops/sec", r.throughput_ops_per_sec);
-            println!("  Memory est:  {} KB", r.memory_allocated_kb);
+            println!(
+                "  Peak RSS:    {:?} KB (process high-water mark)",
+                r.memory_peak_rss_kb
+            );
             println!("  Status:      {}", r.status);
             println!("  Notes:       {}", r.notes);
         }
         println!("\n------------------------------------------------------------");
-        println!("Total workloads: {} in {:.2} ms", report.total_workloads, report.total_elapsed_ms);
-        println!("Correctness Gate: {}", if report.passed_correctness_gate { "PASSED" } else { "FAILED" });
-        println!("Resource Gate:    {}", if report.passed_resource_gate { "PASSED" } else { "FAILED" });
+        println!(
+            "Total workloads: {} in {:.2} ms",
+            report.total_workloads, report.total_elapsed_ms
+        );
+        println!(
+            "Correctness Gate: {}",
+            if report.passed_correctness_gate {
+                "PASSED"
+            } else {
+                "FAILED"
+            }
+        );
+        println!(
+            "Resource Gate:    {}",
+            match report.passed_resource_gate {
+                Some(true) => "PASSED",
+                Some(false) => "FAILED",
+                None => "UNMEASURED",
+            }
+        );
         println!("============================================================\n");
-        return Ok(());
+        return report.ensure_passed();
     }
 
     let rt = tokio::runtime::Runtime::new()?;
-    let (actual_port, server_handle) = rt.block_on(async {
-        start_server(args.port, !args.no_samples).await
-    })?;
+    let (actual_port, server_handle) =
+        rt.block_on(async { start_server(args.port, !args.no_samples).await })?;
 
-    println!("Gridloom Core Engine active at http://127.0.0.1:{}", actual_port);
+    println!(
+        "Gridloom Core Engine active at http://127.0.0.1:{}",
+        actual_port
+    );
 
     // If headless server mode requested or DISPLAY is unset
     let has_display = env::var("DISPLAY").is_ok() || env::var("WAYLAND_DISPLAY").is_ok();
     if args.server || !has_display {
-        println!("Running in server mode. Open http://127.0.0.1:{} in your browser.", actual_port);
+        println!(
+            "Running in server mode. Open http://127.0.0.1:{} in your browser.",
+            actual_port
+        );
         rt.block_on(async {
             let _ = server_handle.await;
         });
